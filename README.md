@@ -1,6 +1,7 @@
 
 # 🚀 HelloWorld漂流瓶插件  
 **轻量级社交互动插件，打造趣味漂流瓶玩法～**  
+![18c531ca35cc9b6517e091e79fa0792f](https://github.com/user-attachments/assets/f7a5ef8e-4b11-49f3-b6fb-d64c8059ff6c)
 
 
 ## 📩 核心功能  
