@@ -1,0 +1,14 @@
+{
+    "max_text_length": {
+        "description": "漂流瓶文字内容的最大长度限制",
+        "type": "int",
+        "default": 500,
+        "hint": "超过此长度的漂流瓶将被拒绝"
+    },
+    "max_images": {
+        "description": "每个漂流瓶允许的最大图片数量",
+        "type": "int",
+        "default": 1,
+        "hint": "超过此数量的图片将被忽略"
+    }
+} 
