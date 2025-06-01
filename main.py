@@ -4,25 +4,32 @@ from astrbot.api import logger, AstrBotConfig
 from typing import Optional
 
 from .bottle_storage import BottleStorage
+from .cloud_bottle_storage import CloudBottleStorage
 from .image_handler import ImageHandler
 from .config_manager import ConfigManager
 from .message_formatter import MessageFormatter
 
-@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.0.0")
+@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.1.0")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.storage = BottleStorage("data")
+        self.cloud_storage = CloudBottleStorage()
         self.image_handler = ImageHandler()
         self.config_manager = ConfigManager(config)
         self.message_formatter = MessageFormatter()
 
     @filter.command("扔漂流瓶")
-    async def throw_bottle(self, event: AstrMessageEvent, content: str):
+    async def throw_bottle(self, event: AstrMessageEvent, content: str = ""):
         """扔一个漂流瓶"""
         # 收集所有图片
         images = await self.image_handler.collect_images(event)
         
+        # 如果既没有文字内容也没有图片，则返回错误提示
+        if not content and not images:
+            yield event.plain_result("漂流瓶不能是空的哦，请至少包含文字或图片～")
+            return
+
         # 检查内容限制
         passed, error_msg = self.config_manager.check_content_limits(content, images)
         if not passed:
@@ -81,6 +88,65 @@ class DriftBottlePlugin(Star):
         bottles = self.storage.get_picked_bottles()
         message = self.message_formatter.format_picked_bottles_list(bottles)
         yield event.plain_result(message)
+
+    @filter.command("扔云漂流瓶")
+    async def throw_cloud_bottle(self, event: AstrMessageEvent, content: str = ""):
+        """扔一个云漂流瓶"""
+        # 收集所有图片
+        images = await self.image_handler.collect_images(event)
+        
+        # 如果既没有文字内容也没有图片，则返回错误提示
+        if not content and not images:
+            yield event.plain_result("漂流瓶不能是空的哦，请至少包含文字或图片～")
+            return
+
+        # 检查内容限制
+        passed, error_msg = self.config_manager.check_content_limits(content, images)
+        if not passed:
+            yield event.plain_result(error_msg)
+            return
+
+        # 只保留允许的最大图片数量
+        max_images = self.config_manager.get_value("max_images")
+        images = images[:max_images]
+        
+        # 添加云漂流瓶
+        try:
+            bottle_id = await self.cloud_storage.add_bottle(
+                content=content,
+                images=images,
+                sender=event.get_sender_name(),
+                sender_id=event.get_sender_id()
+            )
+            if bottle_id:
+                yield event.plain_result(f"你的云漂流瓶已经扔进云端大海了！瓶子的编号是 {bottle_id}")
+            else:
+                yield event.plain_result("抱歉，扔云漂流瓶失败了，请稍后再试...")
+        except Exception as e:
+            logger.error(f"Failed to throw cloud bottle: {e}")
+            yield event.plain_result("抱歉，扔云漂流瓶时遇到了问题，请稍后再试...")
+
+    @filter.command("捡云漂流瓶")
+    async def pick_cloud_bottle(self, event: AstrMessageEvent):
+        """捡起一个云漂流瓶"""
+        try:
+            result = await self.cloud_storage.pick_random_bottle()
+            if not result:
+                yield event.plain_result("云端海面上没有漂流瓶了...")
+                return
+
+            bottle = result["bottle"]
+            is_reset = result["is_reset"]
+
+            # 如果是重置后的瓶子，添加提示信息
+            prefix_message = "你从云端捡到了一个漂流瓶！"
+            if is_reset:
+                prefix_message = "云端的新漂流瓶已经用完了，已经重新放出之前捡过的漂流瓶～\n" + prefix_message
+
+            yield self.message_formatter.create_bottle_message(event, bottle, prefix_message)
+        except Exception as e:
+            logger.error(f"Failed to pick cloud bottle: {e}")
+            yield event.plain_result("抱歉，捡云漂流瓶时遇到了问题，请稍后再试...")
 
     async def terminate(self):
         """插件终止时的清理工作"""

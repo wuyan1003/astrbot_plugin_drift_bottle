@@ -1,6 +1,9 @@
 from typing import Dict, List
 import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
+from astrbot.api import logger
+import base64
+import re
 
 class MessageFormatter:
     @staticmethod
@@ -23,13 +26,44 @@ class MessageFormatter:
         
         # 添加图片到消息链
         if bottle.get('images'):
+            logger.info(f"Processing {len(bottle['images'])} images")
             for img in bottle['images']:
-                if img['type'] == 'base64':
+                if img.get('type') == 'base64' and img.get('data'):
                     try:
-                        message_chain.append(Comp.Image(file=f"base64://{img['data']}"))
+                        # 获取base64数据
+                        img_data = img['data']
+                        logger.info(f"Processing image data length: {len(img_data)}")
+
+                        # 如果数据已经包含 "base64://"，去掉这个前缀
+                        if img_data.startswith('base64://'):
+                            img_data = img_data.replace('base64://', '')
+                        
+                        # 清理base64数据中的空白字符
+                        img_data = ''.join(img_data.split())
+
+                        # 尝试解码base64数据以验证其有效性
+                        try:
+                            base64.b64decode(img_data)
+                            logger.info("Base64 data validation successful")
+                        except Exception as e:
+                            logger.error(f"Base64 decode failed: {str(e)}")
+                            continue
+
+                        # 分批发送大图片
+                        if len(img_data) > 1024 * 1024:  # 如果图片大于1MB
+                            logger.info("Large image detected, sending as separate message")
+                            # 先发送文本消息
+                            event.chain_result(message_chain)
+                            # 再单独发送图片
+                            return event.chain_result([Comp.Image(file=f"base64://{img_data}")])
+                        else:
+                            logger.info("Adding image to message chain")
+                            message_chain.append(Comp.Image(file=f"base64://{img_data}"))
+                            logger.info("Image added successfully")
                     except Exception as e:
-                        from astrbot.api import logger
                         logger.error(f"处理base64图片失败: {str(e)}")
+                else:
+                    logger.error(f"Invalid image format: {img}")
 
         return event.chain_result(message_chain)
 
