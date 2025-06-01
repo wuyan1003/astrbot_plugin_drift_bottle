@@ -10,5 +10,11 @@
         "type": "int",
         "default": 1,
         "hint": "超过此数量的图片将被忽略"
+    },
+    "uri": {
+        "description": "MongoDB URI",
+        "type": "string",
+        "default": "mongodb+srv://bottlefinder:kwamrQP62FdDfu5d@driftbottles.dinahmk.mongodb.net/?retryWrites=true&w=majority&appName=driftBottles",
+        "hint": "MongoDB URI"
     }
-} 
+}
