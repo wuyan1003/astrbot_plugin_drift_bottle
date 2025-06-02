@@ -1,5 +1,5 @@
 name: astrbot_plugin_drift_bottle
 desc: 一个简单的漂流瓶插件，支持发送和捡起漂流瓶，可以包含文字和图片
-version: 1.1.0
+version: 1.0.0
 author: wuyan1003
 repo: https://github.com/wuyan1003/astrbot_plugin_drift_bottle
