@@ -10,11 +10,5 @@
         "type": "int",
         "default": 1,
         "hint": "超过此数量的图片将被忽略"
-    },
-    "api_base_url": {
-        "description": "MongoDB api_base_url",
-        "type": "string",
-        "default": "https://adb.flartiny.top",
-        "hint": "MongoDB api_base_url"
     }
-}
+} 
