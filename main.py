@@ -9,7 +9,7 @@ from .image_handler import ImageHandler
 from .config_manager import ConfigManager
 from .message_formatter import MessageFormatter
 
-@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.1.0")
+@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.2.0")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -112,14 +112,16 @@ class DriftBottlePlugin(Star):
         
         # 添加云漂流瓶
         try:
-            bottle_id = await self.cloud_storage.add_bottle(
+            result = await self.cloud_storage.add_bottle(
                 content=content,
                 images=images,
                 sender=event.get_sender_name(),
                 sender_id=event.get_sender_id()
             )
-            if bottle_id:
-                yield event.plain_result(f"你的云漂流瓶已经扔进云端大海了！瓶子的编号是 {bottle_id}")
+            if isinstance(result, dict) and "error" in result:
+                yield event.plain_result(result["error"])
+            elif result:
+                yield event.plain_result(f"你的云漂流瓶已经扔进云端大海了！瓶子的编号是 {result}")
             else:
                 yield event.plain_result("抱歉，扔云漂流瓶失败了，请稍后再试...")
         except Exception as e:
@@ -130,9 +132,13 @@ class DriftBottlePlugin(Star):
     async def pick_cloud_bottle(self, event: AstrMessageEvent):
         """捡起一个云漂流瓶"""
         try:
-            result = await self.cloud_storage.pick_random_bottle()
+            result = await self.cloud_storage.pick_random_bottle(event.get_sender_id())
             if not result:
                 yield event.plain_result("云端海面上没有漂流瓶了...")
+                return
+
+            if "error" in result:
+                yield event.plain_result(result["error"])
                 return
 
             bottle = result["bottle"]
