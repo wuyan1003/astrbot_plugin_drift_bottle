@@ -1,14 +1,38 @@
 {
-    "max_text_length": {
-        "description": "漂流瓶文字内容的最大长度限制",
+    "max_content_length": {
         "type": "int",
-        "default": 500,
+        "description": "漂流瓶文本内容的最大长度限制",
+        "default": 300,
         "hint": "超过此长度的漂流瓶将被拒绝"
     },
     "max_images": {
-        "description": "每个漂流瓶允许的最大图片数量",
         "type": "int",
-        "default": 1,
+        "description": "每个漂流瓶允许的最大图片数量",
+        "default": 2,
         "hint": "超过此数量的图片将被忽略"
+    },
+    "cloud_sync_enabled": {
+        "type": "bool",
+        "description": "是否启用漂流瓶云同步功能",
+        "default": true,
+        "hint": "开启后将自动同步本地漂流瓶到云端"
+    },
+    "cloud_sync_interval": {
+        "type": "int",
+        "description": "自动同步的时间间隔（秒），默认5分钟",
+        "default": 300,
+        "hint": "设置为0将禁用自动同步"
+    },
+    "cloud_sync_batch_size": {
+        "type": "int",
+        "description": "每次同步上传的最大漂流瓶数量",
+        "default": 5,
+        "hint": "建议不要超过5，以免触发服务器限制"
+    },
+    "cloud_sync_server_url": {
+        "type": "string",
+        "description": "云漂流瓶服务器的地址",
+        "default": "http://47.109.207.155:1145",
+        "hint": "服务器地址，包含协议和端口"
     }
-} 
+}

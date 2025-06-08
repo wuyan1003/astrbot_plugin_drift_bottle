@@ -2,22 +2,92 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 from typing import Optional
+import asyncio
+import time
 
 from .bottle_storage import BottleStorage
 from .cloud_bottle_storage import CloudBottleStorage
 from .image_handler import ImageHandler
 from .config_manager import ConfigManager
 from .message_formatter import MessageFormatter
+from .uploaded_bottles_tracker import UploadedBottlesTracker
 
-@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.2.0")
+@register("drift_bottle", "wuyan1003", "一个简单的漂流瓶插件", "1.3.0")
 class DriftBottlePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.config_manager = ConfigManager(config)  # 先初始化配置管理器
         self.storage = BottleStorage("data")
-        self.cloud_storage = CloudBottleStorage()
+        self.cloud_storage = CloudBottleStorage(self.config_manager)  # 传入配置管理器
         self.image_handler = ImageHandler()
-        self.config_manager = ConfigManager(config)
         self.message_formatter = MessageFormatter()
+        self.upload_tracker = UploadedBottlesTracker("data")
+        self.sync_task = None
+        
+        # 如果启用了云同步，启动定时同步任务
+        if self.config_manager.is_cloud_sync_enabled():
+            self.start_sync_task()
+
+    def start_sync_task(self):
+        """启动定时同步任务"""
+        if self.sync_task is None:
+            self.sync_task = asyncio.create_task(self._sync_loop())
+            logger.info("已启动云同步任务")
+
+    def stop_sync_task(self):
+        """停止定时同步任务"""
+        if self.sync_task:
+            self.sync_task.cancel()
+            self.sync_task = None
+            logger.info("已停止云同步任务")
+
+    async def _sync_loop(self):
+        """定时同步循环"""
+        while True:
+            try:
+                await self._sync_bottles()
+                await asyncio.sleep(self.config_manager.get_cloud_sync_interval())
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"云同步任务出错: {str(e)}")
+                await asyncio.sleep(60)  # 出错后等待1分钟再重试
+
+    async def _sync_bottles(self):
+        """同步本地漂流瓶到云端"""
+        try:
+            bottles = self.storage.get_bottles_to_upload()  # 获取需要上传的漂流瓶
+            batch_size = self.config_manager.get_cloud_sync_batch_size()
+            uploaded_count = 0
+            
+            for bottle in bottles:
+                if uploaded_count >= batch_size:
+                    break
+                    
+                try:
+                    bottle_id = await self.cloud_storage.add_bottle(
+                        content=bottle["content"],
+                        images=bottle["images"],
+                        sender=bottle["sender"],
+                        sender_id=bottle["sender_id"]
+                    )
+                    
+                    if isinstance(bottle_id, int):
+                        self.storage.mark_uploaded(bottle["id"])  # 标记已上传
+                        uploaded_count += 1
+                        logger.info(f"成功上传漂流瓶 {bottle['id']} 到云端")
+                    elif isinstance(bottle_id, dict) and "error" in bottle_id:
+                        logger.warning(f"上传漂流瓶 {bottle['id']} 失败: {bottle_id['error']}")
+                    
+                    # 遵守速率限制
+                    await asyncio.sleep(12)  # 每5个/分钟 = 每12秒1个
+                except Exception as e:
+                    logger.error(f"上传漂流瓶 {bottle['id']} 时出错: {str(e)}")
+            
+            if uploaded_count > 0:
+                logger.info(f"本次同步共上传了 {uploaded_count} 个漂流瓶")
+        except Exception as e:
+            logger.error(f"执行同步任务时出错: {str(e)}")
 
     @filter.command("扔漂流瓶")
     async def throw_bottle(self, event: AstrMessageEvent, content: str = ""):
@@ -156,4 +226,6 @@ class DriftBottlePlugin(Star):
 
     async def terminate(self):
         """插件终止时的清理工作"""
+        self.stop_sync_task()
         await self.image_handler.close()
+        await self.cloud_storage.close()

@@ -24,12 +24,20 @@ class BottleStorage:
                 data = json.load(f)
             
             if isinstance(data, list):
+                # 如果是旧格式的列表数据，转换为新格式
                 new_data = {
-                    "active": data,
+                    "active": [{**bottle, "need_upload": True} for bottle in data],
                     "picked": []
                 }
                 self._save_bottles(new_data)
                 logger.info("漂流瓶数据已成功迁移到新格式")
+            elif isinstance(data, dict) and "active" in data and "picked" in data:
+                # 如果是没有need_upload字段的旧版数据，添加该字段
+                for bottle in data["active"]:
+                    if "need_upload" not in bottle:
+                        bottle["need_upload"] = True
+                self._save_bottles(data)
+                logger.info("漂流瓶数据已添加need_upload字段")
         except Exception as e:
             logger.error(f"迁移数据时出错: {str(e)}")
 
@@ -70,12 +78,27 @@ class BottleStorage:
             "images": images,
             "sender": sender,
             "sender_id": sender_id,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "need_upload": True  # 新增：标记需要上传
         }
         
         bottles["active"].append(bottle)
         self._save_bottles(bottles)
         return new_id
+
+    def mark_uploaded(self, bottle_id: int) -> None:
+        """标记漂流瓶已上传"""
+        bottles = self._load_bottles()
+        for bottle in bottles["active"]:
+            if bottle["id"] == bottle_id:
+                bottle["need_upload"] = False
+                break
+        self._save_bottles(bottles)
+
+    def get_bottles_to_upload(self) -> List[Dict]:
+        """获取所有需要上传的漂流瓶"""
+        bottles = self._load_bottles()
+        return [b for b in bottles["active"] if b.get("need_upload", True)]
 
     def pick_random_bottle(self) -> Optional[Dict]:
         """随机捡起一个漂流瓶"""
@@ -110,4 +133,9 @@ class BottleStorage:
     def get_picked_bottles(self) -> List[Dict]:
         """获取所有已捡起的漂流瓶"""
         bottles = self._load_bottles()
-        return sorted(bottles["picked"], key=lambda x: x["timestamp"], reverse=True) 
+        return sorted(bottles["picked"], key=lambda x: x["timestamp"], reverse=True)
+
+    def get_active_bottles(self) -> List[Dict]:
+        """获取所有未被捡起的漂流瓶"""
+        bottles = self._load_bottles()
+        return bottles["active"] 

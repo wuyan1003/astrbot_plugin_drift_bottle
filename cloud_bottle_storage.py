@@ -9,26 +9,13 @@ import asyncio
 from aiohttp.client_exceptions import ClientConnectorError, ServerDisconnectedError
 
 class CloudBottleStorage:
-    def __init__(self, base_url: str = "http://47.109.207.155:1145"):
-        self.base_url = base_url
-        # 使用简化的连接配置
-        self.connector = aiohttp.TCPConnector(
-            force_close=True,  # 改回强制关闭连接
-            enable_cleanup_closed=True,
-            limit=10,
-            ttl_dns_cache=300
-        )
-        self.timeout = aiohttp.ClientTimeout(
-            total=30,
-            connect=10,
-            sock_connect=10,
-            sock_read=15
-        )
+    def __init__(self, config_manager):
+        self.config_manager = config_manager
         self.session = None
+        self.timeout = aiohttp.ClientTimeout(total=30)
         self.headers = {
-            'User-Agent': 'CloudBottle/1.0',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
         self._lock = asyncio.Lock()  # 添加锁来保护会话创建
         # 添加速率限制处理
@@ -43,10 +30,9 @@ class CloudBottleStorage:
                     if self.session and not self.session.closed:
                         await self.session.close()
                     self.session = aiohttp.ClientSession(
-                        connector=self.connector,
+                        connector=aiohttp.TCPConnector(verify_ssl=False, force_close=True),
                         timeout=self.timeout,
-                        headers=self.headers,
-                        trust_env=True
+                        headers=self.headers
                     )
                 return self.session
             except Exception as e:
@@ -97,7 +83,7 @@ class CloudBottleStorage:
         logger.error(f"达到最大重试次数，最后的错误: {str(last_exception)}")
         raise last_exception
 
-    async def process_images(self, images: List[Union[str, Dict]]) -> List[Dict[str, str]]:
+    async def process_images(self, images: List[Union[str, Dict]]) -> List[Dict]:
         """处理图片列表，将图片转换为base64格式"""
         processed_images = []
         
@@ -159,7 +145,7 @@ class CloudBottleStorage:
                         try:
                             # 为每个图片下载创建新的会话
                             async with aiohttp.ClientSession(
-                                connector=self.connector,
+                                connector=aiohttp.TCPConnector(verify_ssl=False, force_close=True),
                                 timeout=self.timeout,
                                 headers=self.headers
                             ) as session:
@@ -192,34 +178,15 @@ class CloudBottleStorage:
 
         return processed_images
 
-    async def _handle_rate_limit_headers(self, response: aiohttp.ClientResponse, endpoint: str):
-        """处理速率限制相关的响应头"""
-        # 从响应头中获取速率限制信息
-        remaining = response.headers.get('X-RateLimit-Remaining')
-        reset = response.headers.get('X-RateLimit-Reset')
-        
-        if remaining is not None:
-            self._rate_limit_remaining[endpoint] = int(remaining)
-        if reset is not None:
-            self._rate_limit_reset[endpoint] = float(reset)
-
-        # 如果遇到速率限制
-        if response.status == 429:
-            retry_after = response.headers.get('Retry-After')
-            if retry_after:
-                retry_after = float(retry_after)
-                # 根据不同的端点返回不同的提示信息
-                if endpoint == 'add_bottle':
-                    return {"error": f"发送漂流瓶太频繁了，请等待 {retry_after:.0f} 秒后再试"}
-                elif endpoint == 'pick_bottle':
-                    return {"error": f"捡漂流瓶太频繁了，请等待 {retry_after:.0f} 秒后再试"}
-                else:
-                    return {"error": f"操作太频繁了，请等待 {retry_after:.0f} 秒后再试"}
-            else:
-                return {"error": "操作太频繁了，请稍后再试"}
+    async def _handle_rate_limit_headers(self, response: aiohttp.ClientResponse, operation: str) -> Optional[Dict]:
+        """处理速率限制响应头"""
+        if response.status == 429:  # Too Many Requests
+            retry_after = int(response.headers.get('Retry-After', 60))
+            logger.warning(f"{operation} 操作触发速率限制，需要等待 {retry_after} 秒")
+            return {"error": f"操作太频繁，请在 {retry_after} 秒后重试"}
         return None
 
-    async def add_bottle(self, content: str, images: List[Union[str, Dict]], sender: str, sender_id: str) -> int:
+    async def add_bottle(self, content: str, images: List[Union[str, Dict]], sender: str, sender_id: str) -> Union[int, Dict]:
         """添加一个云漂流瓶"""
         try:
             logger.info(f"Adding bottle with {len(images)} images")
@@ -233,35 +200,33 @@ class CloudBottleStorage:
                 "picked": False
             }
             logger.info(f"Sending bottle data with {len(processed_images)} processed images")
-            logger.info(f"Attempting to connect to {self.base_url}/api/bottles")
             
-            async with aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(verify_ssl=False, force_close=True),
-                timeout=self.timeout,
-                headers=self.headers
-            ) as session:
-                async with session.post(
-                    f"{self.base_url}/api/bottles",
-                    json=data
-                ) as response:
-                    # 处理速率限制
-                    rate_limit_result = await self._handle_rate_limit_headers(response, 'add_bottle')
-                    if rate_limit_result:
-                        return rate_limit_result
-                        
-                    if response.status == 200:
-                        result = await response.json()
-                        bottle_id = result.get("id")
-                        logger.info(f"Successfully added bottle with ID {bottle_id}")
-                        return bottle_id
-                    elif response.status == 403:
-                        error_text = await response.text()
-                        logger.warning(f"Blocked attempt from blacklisted sender: {sender_id}")
-                        return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"Failed to add bottle: HTTP {response.status} - {error_text}")
-                        return None
+            base_url = self.config_manager.get_cloud_server_url()
+            logger.info(f"Attempting to connect to {base_url}/api/bottles")
+            
+            session = await self.get_session()
+            async with session.post(
+                f"{base_url}/api/bottles",
+                json=data
+            ) as response:
+                # 处理速率限制
+                rate_limit_result = await self._handle_rate_limit_headers(response, 'add_bottle')
+                if rate_limit_result:
+                    return rate_limit_result
+                    
+                if response.status == 200:
+                    result = await response.json()
+                    bottle_id = result.get("id")
+                    logger.info(f"Successfully added bottle with ID {bottle_id}")
+                    return bottle_id
+                elif response.status == 403:
+                    error_text = await response.text()
+                    logger.warning(f"Blocked attempt from blacklisted sender: {sender_id}")
+                    return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to add bottle: HTTP {response.status} - {error_text}")
+                    return None
 
         except aiohttp.ClientError as e:
             logger.error(f"Connection error details: {str(e)}")
@@ -273,79 +238,73 @@ class CloudBottleStorage:
     async def pick_random_bottle(self, sender_id: str) -> Optional[Dict]:
         """随机捡起一个云漂流瓶"""
         try:
-            logger.info("尝试捡起随机漂流瓶...")
-            
-            async with aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(verify_ssl=False, force_close=True),
-                timeout=self.timeout,
-                headers=self.headers
-            ) as session:
-                async with session.get(f"{self.base_url}/api/bottles/random?sender_id={sender_id}") as response:
-                    # 处理速率限制
-                    rate_limit_result = await self._handle_rate_limit_headers(response, 'pick_bottle')
-                    if rate_limit_result:
-                        return rate_limit_result
-                        
-                    response_text = await response.text()
-                    logger.info(f"收到响应: 状态码 {response.status}")
-                    logger.info(f"响应内容: {response_text}")
+            base_url = self.config_manager.get_cloud_server_url()
+            session = await self.get_session()
+            async with session.get(f"{base_url}/api/bottles/random?sender_id={sender_id}") as response:
+                response_text = await response.text()
+                
+                # 处理速率限制
+                rate_limit_result = await self._handle_rate_limit_headers(response, 'pick_bottle')
+                if rate_limit_result:
+                    return rate_limit_result
 
-                    if response.status == 200:
-                        try:
-                            bottle = await response.json()
-                            logger.info(f"成功解析漂流瓶数据: {json.dumps(bottle, ensure_ascii=False)}")
-                            if 'images' in bottle and isinstance(bottle['images'], list):
-                                for img in bottle['images']:
-                                    if isinstance(img, dict) and img.get('type') == 'base64':
-                                        img['data'] = f"base64://{img['data']}"
-                            return {"bottle": bottle, "is_reset": False}
-                        except json.JSONDecodeError as e:
-                            logger.error(f"解析响应JSON失败: {str(e)}, 响应内容: {response_text}")
-                            raise
-                    elif response.status == 403:
-                        logger.warning(f"用户 {sender_id} 在黑名单中，无法捡起漂流瓶")
-                        return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
-                    elif response.status == 404:
-                        logger.info("没有找到可用的漂流瓶，尝试重置...")
-                        async with session.post(f"{self.base_url}/api/bottles/reset") as reset_response:
-                            # 处理重置操作的速率限制
-                            rate_limit_result = await self._handle_rate_limit_headers(reset_response, 'reset_bottle')
-                            if rate_limit_result:
-                                return rate_limit_result
-                                
-                            if reset_response.status == 200:
-                                logger.info("重置成功，重新尝试捡瓶子...")
-                                async with session.get(f"{self.base_url}/api/bottles/random?sender_id={sender_id}") as retry_response:
-                                    # 处理速率限制
-                                    rate_limit_result = await self._handle_rate_limit_headers(retry_response, 'pick_bottle')
-                                    if rate_limit_result:
-                                        return rate_limit_result
-                                        
-                                    if retry_response.status == 200:
-                                        try:
-                                            bottle = await retry_response.json()
-                                            logger.info(f"重置后成功获取漂流瓶: {json.dumps(bottle, ensure_ascii=False)}")
-                                            if 'images' in bottle and isinstance(bottle['images'], list):
-                                                for img in bottle['images']:
-                                                    if isinstance(img, dict) and img.get('type') == 'base64':
-                                                        img['data'] = f"base64://{img['data']}"
-                                            return {"bottle": bottle, "is_reset": True}
-                                        except json.JSONDecodeError as e:
-                                            logger.error(f"解析重试响应JSON失败: {str(e)}")
-                                            raise
-                                    elif retry_response.status == 403:
-                                        logger.warning(f"用户 {sender_id} 在黑名单中，无法捡起漂流瓶")
-                                        return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
-                                    else:
-                                        retry_text = await retry_response.text()
-                                        logger.error(f"重置后获取漂流瓶失败: HTTP {retry_response.status} - {retry_text}")
-                            else:
-                                reset_text = await reset_response.text()
-                                logger.error(f"重置漂流瓶失败: HTTP {reset_response.status} - {reset_text}")
-                        return None
-                    else:
-                        logger.error(f"获取漂流瓶失败: HTTP {response.status} - {response_text}")
-                        return None
+                if response.status == 200:
+                    try:
+                        bottle = await response.json()
+                        logger.info(f"成功解析漂流瓶数据: {json.dumps(bottle, ensure_ascii=False)}")
+                        if 'images' in bottle and isinstance(bottle['images'], list):
+                            for img in bottle['images']:
+                                if isinstance(img, dict) and img.get('type') == 'base64':
+                                    img['data'] = f"base64://{img['data']}"
+                        return {"bottle": bottle, "is_reset": False}
+                    except json.JSONDecodeError as e:
+                        logger.error(f"解析响应JSON失败: {str(e)}, 响应内容: {response_text}")
+                        raise
+                elif response.status == 403:
+                    logger.warning(f"用户 {sender_id} 在黑名单中，无法捡起漂流瓶")
+                    return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
+                elif response.status == 404:
+                    logger.info("没有找到可用的漂流瓶，尝试重置...")
+                    async with session.post(f"{base_url}/api/bottles/reset") as reset_response:
+                        # 处理重置操作的速率限制
+                        rate_limit_result = await self._handle_rate_limit_headers(reset_response, 'reset_bottle')
+                        if rate_limit_result:
+                            return rate_limit_result
+                            
+                        if reset_response.status == 200:
+                            logger.info("重置成功，重新尝试捡瓶子...")
+                            async with session.get(f"{base_url}/api/bottles/random?sender_id={sender_id}") as retry_response:
+                                # 处理速率限制
+                                rate_limit_result = await self._handle_rate_limit_headers(retry_response, 'pick_bottle')
+                                if rate_limit_result:
+                                    return rate_limit_result
+                                    
+                                if retry_response.status == 200:
+                                    try:
+                                        bottle = await retry_response.json()
+                                        logger.info(f"重置后成功获取漂流瓶: {json.dumps(bottle, ensure_ascii=False)}")
+                                        if 'images' in bottle and isinstance(bottle['images'], list):
+                                            for img in bottle['images']:
+                                                if isinstance(img, dict) and img.get('type') == 'base64':
+                                                    img['data'] = f"base64://{img['data']}"
+                                        return {"bottle": bottle, "is_reset": True}
+                                    except json.JSONDecodeError as e:
+                                        logger.error(f"解析重试响应JSON失败: {str(e)}")
+                                        raise
+                                elif retry_response.status == 403:
+                                    logger.warning(f"用户 {sender_id} 在黑名单中，无法捡起漂流瓶")
+                                    return {"error": "您已被加入黑名单，无法使用漂流瓶功能"}
+                                else:
+                                    retry_text = await retry_response.text()
+                                    logger.error(f"重置后获取漂流瓶失败: HTTP {retry_response.status} - {retry_text}")
+                                    return None
+                        else:
+                            reset_text = await reset_response.text()
+                            logger.error(f"重置漂流瓶失败: HTTP {reset_response.status} - {reset_text}")
+                            return None
+                else:
+                    logger.error(f"获取漂流瓶失败: HTTP {response.status} - {response_text}")
+                    return None
                     
         except aiohttp.ClientError as e:
             logger.error(f"网络请求错误: {str(e)}", exc_info=True)
@@ -357,8 +316,9 @@ class CloudBottleStorage:
     async def get_bottle_counts(self) -> Tuple[int, int]:
         """获取云漂流瓶数量"""
         try:
+            base_url = self.config_manager.get_cloud_server_url()
             session = await self.get_session()
-            async with session.get(f"{self.base_url}/api/bottles/count", timeout=10) as response:
+            async with session.get(f"{base_url}/api/bottles/count", timeout=10) as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("active", 0), data.get("picked", 0)
